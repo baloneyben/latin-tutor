@@ -27,6 +27,13 @@ type TutorLogEntry = {
 type Mode = "flashcards" | "quiz" | "tutor";
 
 export default function HomePage() {
+  // --- App-level login state (password gate) ---
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  // --- Existing state ---
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(
     null,
@@ -41,6 +48,18 @@ export default function HomePage() {
   const [tutorLogs, setTutorLogs] = useState<TutorLogEntry[]>([]);
   const [parentMode, setParentMode] = useState(false);
   const [parentPinInput, setParentPinInput] = useState("");
+  const [parentPinError, setParentPinError] = useState<string | null>(null);
+  const [parentPinLoading, setParentPinLoading] = useState(false);
+
+  // On mount: check if user already authenticated in this browser
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("lt-access");
+      if (stored === "granted") {
+        setIsAuthenticated(true);
+      }
+    }
+  }, []);
 
   // Very naive "study timer" – increments while a chapter is selected
   useEffect(() => {
@@ -52,6 +71,83 @@ export default function HomePage() {
   }, [selectedChapterId]);
 
   const selectedChapter = chapters.find((c) => c.id === selectedChapterId);
+
+  // Handle app login (password)
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError(null);
+
+    try {
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: loginPassword }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setLoginError(data.error || "Falsches Passwort.");
+        setLoginLoading(false);
+        return;
+      }
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("lt-access", "granted");
+      }
+      setIsAuthenticated(true);
+      setLoginPassword("");
+    } catch (err) {
+      console.error(err);
+      setLoginError(
+        "Es ist ein Fehler aufgetreten. Bitte versuche es später noch einmal."
+      );
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  // If not logged in yet, show password screen instead of the app
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-md border border-slate-200">
+          <h1 className="text-xl font-semibold mb-2 text-center">
+            Latein-Trainer – Zugang
+          </h1>
+          <p className="text-xs text-slate-600 mb-4 text-center">
+            Bitte gib das Passwort ein, um den Trainer zu verwenden.
+          </p>
+          <form onSubmit={handleLogin} className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Passwort
+              </label>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                autoComplete="current-password"
+              />
+            </div>
+            {loginError && (
+              <p className="text-xs text-red-600">{loginError}</p>
+            )}
+            <button
+              type="submit"
+              disabled={loginLoading}
+              className="w-full rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+            >
+              {loginLoading ? "Prüfe Passwort…" : "Anmelden"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Main app logic ---
 
   async function handleCreateChapter(e: React.FormEvent) {
     e.preventDefault();
@@ -99,17 +195,71 @@ export default function HomePage() {
     setTutorLogs((prev) => [entry, ...prev]);
   }
 
-  function handleParentModeToggle() {
+  // Toggle parent mode, verifying PIN via API
+  async function handleParentModeToggle() {
     if (parentMode) {
+      // turn off
       setParentMode(false);
       setParentPinInput("");
-    } else {
-      if (parentPinInput === "1234") {
-        setParentMode(true);
-        setParentPinInput("");
-      } else {
-        alert("Falsche PIN.");
+      setParentPinError(null);
+      return;
+    }
+
+    if (!parentPinInput.trim()) {
+      setParentPinError("Bitte gib eine PIN ein.");
+      return;
+    }
+
+    setParentPinLoading(true);
+    setParentPinError(null);
+
+    try {
+      const res = await fetch("/api/verify-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: parentPinInput.trim() }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setParentPinError(data.error || "Falsche PIN.");
+        return;
       }
+
+      const data = await res.json().catch(() => ({ success: false }));
+      if (!data.success) {
+        setParentPinError("Falsche PIN.");
+        return;
+      }
+
+      setParentMode(true);
+      setParentPinInput("");
+      setParentPinError(null);
+    } catch (err) {
+      console.error(err);
+      setParentPinError(
+        "Es ist ein Fehler aufgetreten. Bitte versuche es später noch einmal."
+      );
+    } finally {
+      setParentPinLoading(false);
+    }
+  }
+
+  // Delete chapter (parent-only action)
+  function handleDeleteChapter(chapterId: string) {
+    const chapter = chapters.find((c) => c.id === chapterId);
+    if (!chapter) return;
+
+    const ok = window.confirm(
+      `Kapitel "${chapter.name}" wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.`
+    );
+    if (!ok) return;
+
+    setChapters((prev) => prev.filter((c) => c.id !== chapterId));
+
+    if (selectedChapterId === chapterId) {
+      setSelectedChapterId(null);
+      setMode("flashcards");
     }
   }
 
@@ -123,22 +273,28 @@ export default function HomePage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-end gap-1">
           {!parentMode && (
             <>
-              <input
-                type="password"
-                value={parentPinInput}
-                onChange={(e) => setParentPinInput(e.target.value)}
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm"
-                placeholder="Eltern-PIN"
-              />
-              <button
-                onClick={handleParentModeToggle}
-                className="rounded-md bg-slate-800 px-3 py-1 text-sm font-medium text-white"
-              >
-                Elternansicht
-              </button>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  value={parentPinInput}
+                  onChange={(e) => setParentPinInput(e.target.value)}
+                  className="rounded-md border border-slate-300 px-2 py-1 text-sm"
+                  placeholder="Eltern-PIN"
+                />
+                <button
+                  onClick={handleParentModeToggle}
+                  disabled={parentPinLoading}
+                  className="rounded-md bg-slate-800 px-3 py-1 text-sm font-medium text-white"
+                >
+                  {parentPinLoading ? "Prüfe…" : "Elternansicht"}
+                </button>
+              </div>
+              {parentPinError && (
+                <p className="text-xs text-red-600">{parentPinError}</p>
+              )}
             </>
           )}
           {parentMode && (
@@ -157,6 +313,7 @@ export default function HomePage() {
           studyTimeMinutes={studyTimeMinutes}
           chapters={chapters}
           tutorLogs={tutorLogs}
+          onDeleteChapter={handleDeleteChapter}
         />
       ) : (
         <>
@@ -540,10 +697,12 @@ function ParentView({
   studyTimeMinutes,
   chapters,
   tutorLogs,
+  onDeleteChapter,
 }: {
   studyTimeMinutes: number;
   chapters: Chapter[];
   tutorLogs: TutorLogEntry[];
+  onDeleteChapter: (id: string) => void;
 }) {
   return (
     <div className="space-y-4 rounded-xl bg-white p-4 shadow-sm">
@@ -556,8 +715,16 @@ function ParentView({
         <h3 className="mb-1 text-sm font-semibold">Kapitel</h3>
         <ul className="text-sm text-slate-700">
           {chapters.map((c) => (
-            <li key={c.id}>
-              {c.name}: {c.vocab.length} Vokabeln, {c.grammarNotes.length} Grammatikpunkte
+            <li key={c.id} className="flex items-center justify-between gap-2">
+              <span>
+                {c.name}: {c.vocab.length} Vokabeln, {c.grammarNotes.length} Grammatikpunkte
+              </span>
+              <button
+                onClick={() => onDeleteChapter(c.id)}
+                className="text-xs text-red-600 hover:text-red-800"
+              >
+                Kapitel löschen
+              </button>
             </li>
           ))}
           {chapters.length === 0 && (
