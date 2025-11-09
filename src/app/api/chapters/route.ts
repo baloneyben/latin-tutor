@@ -1,10 +1,30 @@
 // src/app/api/chapters/route.ts
 import { NextResponse } from "next/server";
-// import OpenAI from "openai"; // uncomment when wiring real OCR/LLM
+import OpenAI from "openai";
 
-// const client = new OpenAI({
-//   apiKey: process.env.OPENAI_API_KEY,
-// });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+type VocabItem = {
+  latin: string;
+  german: string;
+};
+
+type Chapter = {
+  id: string;
+  name: string;
+  vocab: VocabItem[];
+  grammarNotes: string[];
+};
+
+async function fileToBase64(file: File): Promise<{ base64: string; mime: string }> {
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const base64 = buffer.toString("base64");
+  const mime = file.type || "image/jpeg";
+  return { base64, mime };
+}
 
 export async function POST(req: Request) {
   const formData = await req.formData();
@@ -18,51 +38,115 @@ export async function POST(req: Request) {
     );
   }
 
-  // TODO: Use OpenAI Vision to extract vocab + grammar from images.
-  // For now, we return a mocked chapter with a few sample vocab items.
+  if (!process.env.OPENAI_API_KEY) {
+    console.error("OPENAI_API_KEY is not set");
+    return NextResponse.json(
+      { error: "Server ist nicht korrekt konfiguriert." },
+      { status: 500 },
+    );
+  }
 
-  // Example of where you'd plug in OpenAI:
-  // const base64Images = await Promise.all(
-  //   images.map(async (file) => {
-  //     const arrayBuffer = await file.arrayBuffer();
-  //     const buffer = Buffer.from(arrayBuffer);
-  //     return `data:${file.type};base64,${buffer.toString("base64")}`;
-  //   })
-  // );
-  //
-  // const response = await client.responses.create({
-  //   model: "gpt-4.1-mini",
-  //   input: [
-  //     {
-  //       role: "user",
-  //       content: [
-  //         {
-  //           type: "input_text",
-  //           text: "Lies diese lateinischen Seiten und extrahiere eine Vokabelliste (Latein–Deutsch) und kurze Grammatiknotizen im JSON-Format.",
-  //         },
-  //         ...base64Images.map((img) => ({
-  //           type: "input_image",
-  //           image_url: { url: img },
-  //         })),
-  //       ],
-  //     },
-  //   ],
-  // });
+  try {
+    // Convert images to base64 data URLs
+    const imagePayloads = await Promise.all(
+      images.map(async (img) => {
+        const { base64, mime } = await fileToBase64(img);
+        return {
+          type: "image_url" as const,
+          image_url: {
+            url: `data:${mime};base64,${base64}`,
+          },
+        };
+      }),
+    );
 
-  // For the MVP skeleton, just mock:
-  const mockChapter = {
-    id: `${Date.now()}`,
-    name,
-    vocab: [
-      { latin: "amicus", german: "Freund" },
-      { latin: "puella", german: "Mädchen" },
-      { latin: "schola", german: "Schule" },
-    ],
-    grammarNotes: [
-      "Substantive der a- und o-Deklination.",
-      "Nominativ und Akkusativ Singular/Plural.",
-    ],
-  };
+    const systemPrompt = `
+Du bist ein hilfsbereiter Latein-Nachhilfelehrer für Schüler an einem deutschen Gymnasium.
 
-  return NextResponse.json({ chapter: mockChapter });
+Du erhältst Fotos von Seiten aus einem Lateinbuch (Vokabel- und Grammatik-Abschnitte). 
+Deine Aufgabe:
+
+1. Erkenne alle klar lesbaren Vokabeln mit Übersetzung (Latein → Deutsch).
+2. Erkenne die wichtigsten Grammatikpunkte, die auf den Seiten erklärt werden.
+
+Gib **ausschließlich** ein JSON-Objekt mit folgendem Format zurück:
+
+{
+  "vocab": [
+    { "latin": "amicus", "german": "Freund" },
+    ...
+  ],
+  "grammarNotes": [
+    "Kurzer deutscher Satz zur Grammatikregel 1.",
+    "Kurzer deutscher Satz zur Grammatikregel 2."
+  ]
+}
+
+- Schreibe die Grammatiknotizen als kurze, verständliche Sätze auf Deutsch.
+- Nimm nur Inhalte auf, die eindeutig im Bild stehen oder sich daraus sicher schließen lassen.
+- Keine zusätzlichen Erklärungen, kein Fließtext außerhalb dieses JSON-Objekts.
+    `.trim();
+
+    const userText = `
+Hier sind Fotos eines Kapitels (Vokabeln und Grammatik) aus einem Lateinbuch.
+Bitte extrahiere Vokabeln (Latein → Deutsch) und Grammatikpunkte wie beschrieben.
+    `.trim();
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            ...imagePayloads,
+          ],
+        },
+      ],
+      temperature: 0.2,
+    });
+
+    const content = response.choices[0].message.content;
+    if (!content) {
+      throw new Error("Keine Antwort vom Modell erhalten.");
+    }
+
+    // content is expected to be a JSON string or contain JSON
+    let parsed: { vocab?: VocabItem[]; grammarNotes?: string[] } = {
+      vocab: [],
+      grammarNotes: [],
+    };
+
+    try {
+      // Try direct JSON parse
+      parsed = JSON.parse(content);
+    } catch {
+      // Try to extract JSON from text if the model wrapped it in extra text
+      const match = content.match(/\{[\s\S]*\}/);
+      if (match) {
+        parsed = JSON.parse(match[0]);
+      } else {
+        throw new Error("Antwort konnte nicht als JSON gelesen werden.");
+      }
+    }
+
+    const chapter: Chapter = {
+      id: `${Date.now()}`,
+      name,
+      vocab: parsed.vocab ?? [],
+      grammarNotes: parsed.grammarNotes ?? [],
+    };
+
+    return NextResponse.json({ chapter });
+  } catch (error: any) {
+    console.error("Fehler bei der Kapitelverarbeitung:", error);
+    return NextResponse.json(
+      {
+        error:
+          "Die Seiten konnten nicht verarbeitet werden. Bitte versuche es mit klaren Fotos noch einmal.",
+      },
+      { status: 500 },
+    );
+  }
 }

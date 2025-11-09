@@ -41,7 +41,7 @@ export default function HomePage() {
   const [mode, setMode] = useState<Mode>("flashcards");
   const [creating, setCreating] = useState(false);
   const [newChapterName, setNewChapterName] = useState("");
-  const [newChapterFiles, setNewChapterFiles] = useState<FileList | null>(null);
+  const [newChapterFiles, setNewChapterFiles] = useState<File[]>([]);
   const [creatingStatus, setCreatingStatus] = useState<string | null>(null);
 
   const [studyTimeMinutes, setStudyTimeMinutes] = useState(0);
@@ -151,7 +151,7 @@ export default function HomePage() {
 
   async function handleCreateChapter(e: React.FormEvent) {
     e.preventDefault();
-    if (!newChapterName || !newChapterFiles) {
+    if (!newChapterName || newChapterFiles.length === 0) {
       setCreatingStatus("Bitte gib einen Kapitelnamen ein und wähle Fotos aus.");
       return;
     }
@@ -161,9 +161,9 @@ export default function HomePage() {
     try {
       const formData = new FormData();
       formData.append("name", newChapterName);
-      Array.from(newChapterFiles)
-        .slice(0, 4)
-        .forEach((file) => formData.append("images", file));
+      newChapterFiles.slice(0, 4).forEach((file) => {
+        formData.append("images", file);
+      });
 
       const res = await fetch("/api/chapters", {
         method: "POST",
@@ -177,7 +177,7 @@ export default function HomePage() {
       const data = (await res.json()) as { chapter: Chapter };
       setChapters((prev) => [...prev, data.chapter]);
       setNewChapterName("");
-      setNewChapterFiles(null);
+      setNewChapterFiles([]);
       (document.getElementById("chapter-images") as HTMLInputElement | null) &&
         ((document.getElementById("chapter-images") as HTMLInputElement).value =
           "");
@@ -347,9 +347,26 @@ export default function HomePage() {
                   type="file"
                   accept="image/*"
                   multiple
-                  onChange={(e) => setNewChapterFiles(e.target.files)}
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (!files) return;
+                    setNewChapterFiles((prev) => {
+                      const current = [...prev];
+                      for (const file of Array.from(files)) {
+                        if (current.length < 4) {
+                          current.push(file);
+                        }
+                      }
+                      return current;
+                    });
+                  }}
                   className="mt-1 w-full text-xs"
                 />
+                {newChapterFiles.length > 0 && (
+                  <p className="mt-1 text-xs text-slate-500">
+                    {newChapterFiles.length} Bild(er) ausgewählt
+                  </p>
+                )}
               </div>
               <button
                 type="submit"
