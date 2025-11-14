@@ -619,49 +619,66 @@ function TutorChat({
   const [loading, setLoading] = useState(false);
 
   async function handleAsk(e: React.FormEvent) {
-    e.preventDefault();
-    const question = input.trim();
-    if (!question) return;
-    setInput("");
-    setMessages((prev) => [...prev, { role: "user", text: question }]);
-    setLoading(true);
+  e.preventDefault();
+  const question = input.trim();
+  if (!question) return;
+  setInput("");
+  setMessages((prev) => [...prev, { role: "user", text: question }]);
+  setLoading(true);
 
-    try {
-      const res = await fetch("/api/tutor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chapterId: chapter.id,
-          chapterName: chapter.name,
-          question,
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error("Tutor-Fehler");
-      }
-
-      const data = (await res.json()) as { answer: string };
-      const answer = data.answer;
-      setMessages((prev) => [...prev, { role: "assistant", text: answer }]);
-
-      onLog({
-        id: `${Date.now()}`,
+  try {
+    const res = await fetch("/api/tutor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         chapterId: chapter.id,
         chapterName: chapter.name,
         question,
-        answerPreview: answer.slice(0, 120),
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.error(err);
-      const fallback =
-        "Ich kann dir nur bei Latein helfen – bitte versuche es später noch einmal.";
-      setMessages((prev) => [...prev, { role: "assistant", text: fallback }]);
-    } finally {
-      setLoading(false);
+      }),
+    });
+
+    if (!res.ok) {
+      // ⬇️ NEW: show real error message coming from backend
+      let msg =
+        "Es ist ein Fehler mit dem Tutor aufgetreten. Bitte versuche es später noch einmal.";
+      try {
+        const data = await res.json();
+        if (data?.error) {
+          msg = data.error;
+        }
+      } catch {
+        // ignore JSON parse errors
+      }
+      setMessages((prev) => [...prev, { role: "assistant", text: msg }]);
+      return;
     }
+
+    const data = (await res.json()) as { answer: string };
+    const answer = data.answer;
+    setMessages((prev) => [...prev, { role: "assistant", text: answer }]);
+
+    onLog({
+      id: `${Date.now()}`,
+      chapterId: chapter.id,
+      chapterName: chapter.name,
+      question,
+      answerPreview: answer.slice(0, 120),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error(err);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        text:
+          "Es ist ein technischer Fehler aufgetreten. Bitte versuche es später noch einmal.",
+      },
+    ]);
+  } finally {
+    setLoading(false);
   }
+}
 
   return (
     <div className="flex flex-col gap-3">

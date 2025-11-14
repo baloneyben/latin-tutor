@@ -1,58 +1,86 @@
 // src/app/api/tutor/route.ts
 import { NextResponse } from "next/server";
-// import OpenAI from "openai";
+import OpenAI from "openai";
 
-// const client = new OpenAI({
-//   apiKey: process.env.OPENAI_API_KEY,
-// });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
+  try {
+    const body = await req.json().catch(() => null);
 
-  if (!body) {
-    return NextResponse.json({ error: "Bad request" }, { status: 400 });
-  }
+    if (!body || typeof body.question !== "string") {
+      return NextResponse.json(
+        { error: "Ungültige Anfrage an den Tutor." },
+        { status: 400 }
+      );
+    }
 
-  const { chapterId, chapterName, question } = body as {
-    chapterId: string;
-    chapterName: string;
-    question: string;
-  };
+    const { question, chapterName } = body as {
+      question: string;
+      chapterName?: string;
+    };
 
-  if (!chapterId || !question) {
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("OPENAI_API_KEY is not set");
+      return NextResponse.json(
+        { error: "Der Tutor ist aktuell nicht richtig konfiguriert." },
+        { status: 500 }
+      );
+    }
+
+    const systemPrompt = `
+Du bist ein geduldiger Latein-Nachhilfelehrer für Schüler an einem deutschen Gymnasium.
+
+Deine Aufgaben:
+- Beantworte alle Fragen zu Latein, z.B. Vokabeln, Grammatik, Übersetzungen, Beispielsätze.
+- Erkläre auf Deutsch, verwende klare, altersgerechte Sprache.
+- Du darfst Beispiele aus der allgemeinen lateinischen Grammatik verwenden, nicht nur aus einem einzelnen Kapitel.
+- Wenn ein Kapitelname angegeben ist, kannst du dich gern darauf beziehen (z.B. "In diesem Kapitel lernst du...").
+
+Einschränkung:
+- Nur wenn die Frage gar nichts mit Latein zu tun hat (z.B. Minecraft, Fußballergebnisse, Politik, Mathe-Hausaufgaben usw.),
+  antworte freundlich:
+
+  "Ich kann dir nur bei Latein helfen – bitte stell mir eine Frage zu Latein, Vokabeln oder Grammatik."
+
+Antworte immer vollständig in Deutsch (mit lateinischen Beispielen, wo nötig).
+    `.trim();
+
+    const userContent = [
+      chapterName
+        ? `Kapitel: ${chapterName}`
+        : "Kein spezielles Kapitel angegeben.",
+      `Frage der Schülerin: ${question}`,
+    ].join("\n\n");
+
+    const completion = await openai.chat.completions.create({
+      // if/when you switch, this is where you'd use "gpt-5-mini"
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.4,
+    });
+
+    const answer = completion.choices[0].message.content ?? "";
+
+    return NextResponse.json({ answer });
+  } catch (err: any) {
+    console.error("Tutor-Fehler:", err);
+    const message =
+      err?.response?.data?.error?.message ||
+      err?.message ||
+      "Unbekannter Fehler im Tutor.";
+
     return NextResponse.json(
-      { error: "chapterId und Frage sind erforderlich." },
-      { status: 400 },
+      {
+        error:
+          "Es ist ein technischer Fehler im Tutor aufgetreten: " + message,
+      },
+      { status: 500 }
     );
   }
-
-  // TODO: Load chapter vocab/grammar from storage to give as context.
-  // In this skeleton we don't have persistent storage, so we just send a fixed prompt.
-
-  const systemPrompt = `
-Du bist ein geduldiger Latein-Nachhilfelehrer für Schülerinnen und Schüler.
-Du darfst NUR Fragen zu lateinischer Grammatik und Vokabeln beantworten.
-Wenn die Frage nichts mit Latein zu tun hat, antworte:
-"Ich kann dir nur bei Latein helfen – bitte stelle mir eine Frage zu den Vokabeln oder zur Grammatik dieses Kapitels."
-Antworte kurz und klar auf Deutsch und nutze Beispiele mit Latein + deutscher Übersetzung.
-Kapitelname: ${chapterName}
-`;
-
-  // When wiring OpenAI, you'd do something like:
-  //
-  // const response = await client.responses.create({
-  //   model: "gpt-4.1-mini",
-  //   input: [
-  //     { role: "system", content: systemPrompt },
-  //     { role: "user", content: question },
-  //   ],
-  // });
-  //
-  // const answer = response.output[0].content[0].text; // shape may change – see docs
-
-  // For now, simple canned answer:
-  const answer =
-    "Ich bin dein Latein-Tutor. In der echten Version antworte ich mit einer Erklärung zu Vokabeln oder Grammatik dieses Kapitels.";
-
-  return NextResponse.json({ answer });
 }
